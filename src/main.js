@@ -20,6 +20,13 @@ import {
   buildPersonNudge,
   normalizeTrip,
 } from './logic.js'
+import {
+  encodeSharePayload,
+  decodeSharePayload,
+  buildShareUrl,
+  readShareHash,
+  clearShareHash,
+} from './share.js'
 
 /** @typedef {import('./logic.js').Trip} Trip */
 /** @typedef {import('./logic.js').Person} Person */
@@ -37,10 +44,12 @@ const app = document.querySelector('#app')
 /** @type {{ trips: Trip[] }} */
 let state = loadState()
 
-/** @type {'home' | 'trip'} */
+/** @type {'home' | 'trip' | 'view'} */
 let screen = 'home'
 /** @type {string | null} */
 let tripId = null
+/** @type {Trip | null} */
+let viewTrip = null
 /** @type {'people' | 'expenses' | 'result'} */
 let tab = 'people'
 /** Expenses list expanded on the Траты tab */
@@ -95,6 +104,12 @@ function logoSvg() {
 
 function render() {
   const offline = !navigator.onLine
+  if (screen === 'view' && viewTrip) {
+    app.innerHTML = renderViewOnly(viewTrip, offline)
+    bindGlobal()
+    if (modal) openModalDom()
+    return
+  }
   if (screen === 'home') {
     app.innerHTML = renderHome(offline)
   } else {
@@ -325,37 +340,137 @@ function renderResult(trip) {
         <div class="stat"><div class="label">Ещё собрать</div><div class="value" style="color:var(--danger)">${formatMoney(s.toCollect)} ₽</div></div>
         <div class="stat"><div class="label">Ещё вернуть</div><div class="value" style="color:var(--ok)">${formatMoney(s.toRefund)} ₽</div></div>
       </div>
-      <p class="muted" style="margin:8px 0 0;font-size:0.8rem">Отметки только здесь. Траты на общак — на вкладке «Траты».</p>
+      <p class="muted" style="margin:8px 0 0;font-size:0.8rem">Отметки только здесь. Ссылка для друзей — снимок на момент отправки.</p>
     </div>
 
     ${
       debtors.length
         ? `<h3 class="section-title">Должны скинуть</h3>
-           ${debtors.map((r) => personSettleCard(r, trip.name)).join('')}`
+           ${debtors.map((r) => personSettleCard(r)).join('')}`
         : ''
     }
 
     ${
       creditors.length
         ? `<h3 class="section-title">Вернуть закупщикам</h3>
-           ${creditors.map((r) => personSettleCard(r, trip.name)).join('')}`
+           ${creditors.map((r) => personSettleCard(r)).join('')}`
         : ''
     }
 
     ${
       even.length
         ? `<h3 class="section-title">Уже ровно</h3>
-           ${even.map((r) => personSettleCard(r, trip.name)).join('')}`
+           ${even.map((r) => personSettleCard(r)).join('')}`
         : ''
     }
 
+    <button class="btn btn-primary btn-block" type="button" data-action="share-link">Ссылка для просмотра</button>
     <button class="btn btn-secondary btn-block" type="button" data-action="copy-all">Скопировать сводку</button>
     <button class="btn btn-ghost btn-block" type="button" data-action="delete-trip">Удалить поход</button>
   `
 }
 
+function renderViewOnly(trip, offline) {
+  const s = settleThroughOrganizer(trip)
+  const debtors = s.rows.filter((r) => r.role === 'debtor')
+  const creditors = s.rows.filter((r) => r.role === 'creditor')
+  const even = s.rows.filter((r) => r.role === 'even')
+  const list = [...trip.expenses].reverse()
+  const open = expensesExpanded
+
+  return `
+    ${offlineBadge(offline)}
+    <div class="view-banner">👁 Только просмотр · снимок от ${formatDate(trip.updatedAt)}</div>
+    <header class="trip-head">
+      <div class="brand-mark" style="margin-bottom:8px">${logoSvg()}<span class="muted" style="font-size:0.85rem">Алкаунтер</span></div>
+      <h1>${escapeHtml(trip.name)}</h1>
+      <p class="muted">${trip.people.length} уч. · правки только у организатора</p>
+    </header>
+    <div class="ripple-water"></div>
+    <div class="stack">
+      <div class="card">
+        <div class="hero-stat">
+          <div class="muted">Всего в общаке</div>
+          <div class="big">${formatMoney(s.totalExpenses)} ₽</div>
+          <div class="muted" style="margin-top:6px">~${formatMoney(s.fairShareHint)} ₽ с носа</div>
+        </div>
+        <div class="stats-grid">
+          <div class="stat"><div class="label">Ещё собрать</div><div class="value" style="color:var(--danger)">${formatMoney(s.toCollect)} ₽</div></div>
+          <div class="stat"><div class="label">Ещё вернуть</div><div class="value" style="color:var(--ok)">${formatMoney(s.toRefund)} ₽</div></div>
+        </div>
+      </div>
+
+      <button
+        class="card clickable expenses-total"
+        type="button"
+        data-action="toggle-expenses"
+        aria-expanded="${open ? 'true' : 'false'}"
+      >
+        <div class="row-main">
+          <div>
+            <strong>Траты</strong>
+            <div class="muted">${list.length} ${pluralTraty(list.length)}${open ? '' : ' · раскрыть'}</div>
+          </div>
+          <div class="total-side">
+            <div class="amount">${formatMoney(s.totalExpenses)} ₽</div>
+            <span class="chevron ${open ? 'open' : ''}" aria-hidden="true">▾</span>
+          </div>
+        </div>
+      </button>
+      <div class="expenses-list ${open ? 'open' : ''}">
+        <div class="expenses-list-inner">
+          ${
+            list.length
+              ? list
+                  .map((e) => {
+                    const payer = trip.people.find((p) => p.id === e.payerId)
+                    const among =
+                      e.splitAmong.length === trip.people.length
+                        ? 'на всех'
+                        : `на ${e.splitAmong.length}`
+                    return `
+              <div class="card expense-row">
+                <div class="row-main">
+                  <div>
+                    <strong>${escapeHtml(e.title || 'Трата')}</strong>
+                    <div class="muted">${escapeHtml(payer?.name || '?')} · ${among}</div>
+                  </div>
+                  <div class="amount">${formatMoney(e.amount)} ₽</div>
+                </div>
+              </div>`
+                  })
+                  .join('')
+              : `<div class="empty compact"><p class="muted">Трат нет</p></div>`
+          }
+        </div>
+      </div>
+
+      ${
+        debtors.length
+          ? `<h3 class="section-title">Должны скинуть</h3>
+             ${debtors.map((r) => personSettleCard(r, true)).join('')}`
+          : ''
+      }
+      ${
+        creditors.length
+          ? `<h3 class="section-title">Вернуть закупщикам</h3>
+             ${creditors.map((r) => personSettleCard(r, true)).join('')}`
+          : ''
+      }
+      ${
+        even.length
+          ? `<h3 class="section-title">Уже ровно</h3>
+             ${even.map((r) => personSettleCard(r, true)).join('')}`
+          : ''
+      }
+
+      <button class="btn btn-secondary btn-block" type="button" data-action="exit-view">Мой Алкаунтер</button>
+    </div>
+  `
+}
+
 /** @param {ReturnType<typeof settleThroughOrganizer>['rows'][number]} r */
-function personSettleCard(r) {
+function personSettleCard(r, readOnly = false) {
   if (r.role === 'debtor') {
     return `
       <div class="card balance-card ${r.done ? 'card-done' : 'card-debt'}">
@@ -368,14 +483,18 @@ function personSettleCard(r) {
           </div>
           <span class="amount ${r.done ? 'refund' : 'owed'}">${formatMoney(r.stillOwes)} ₽</span>
         </div>
-        <div class="row-actions" style="margin-top:8px">
+        ${
+          readOnly
+            ? ''
+            : `<div class="row-actions" style="margin-top:8px">
           ${
             r.done
               ? `<button class="mini-btn mini-btn-cancel" type="button" data-action="unflag" data-id="${r.person.id}">Галя, отмена!</button>`
               : `<button class="mini-btn" type="button" data-action="nudge" data-id="${r.person.id}">текст напоминания</button>
                  <button class="mini-btn mini-btn-mark" type="button" data-action="flag" data-id="${r.person.id}">отметить оплату</button>`
           }
-        </div>
+        </div>`
+        }
       </div>`
   }
 
@@ -391,14 +510,18 @@ function personSettleCard(r) {
           </div>
           <span class="amount refund">+${formatMoney(r.toRefund)} ₽</span>
         </div>
-        <div class="row-actions" style="margin-top:8px">
+        ${
+          readOnly
+            ? ''
+            : `<div class="row-actions" style="margin-top:8px">
           ${
             r.done
               ? `<button class="mini-btn mini-btn-cancel" type="button" data-action="unflag" data-id="${r.person.id}">Галя, отмена!</button>`
               : `<button class="mini-btn" type="button" data-action="nudge" data-id="${r.person.id}">текст</button>
                  <button class="mini-btn mini-btn-mark" type="button" data-action="flag" data-id="${r.person.id}">вернул у костра</button>`
           }
-        </div>
+        </div>`
+        }
       </div>`
   }
 
@@ -522,6 +645,18 @@ function onAction(e) {
       copyText(text)
       break
     }
+    case 'share-link': {
+      if (!trip) break
+      shareTripLink(trip)
+      break
+    }
+    case 'exit-view':
+      clearShareHash()
+      viewTrip = null
+      screen = 'home'
+      tripId = null
+      render()
+      break
     case 'nudge': {
       if (!trip) break
       const s = settleThroughOrganizer(trip)
@@ -789,7 +924,54 @@ function bindModal(backdrop) {
 window.addEventListener('online', () => render())
 window.addEventListener('offline', () => render())
 
-render()
+async function shareTripLink(trip) {
+  try {
+    const payload = await encodeSharePayload(trip)
+    const url = buildShareUrl(payload)
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: `Алкаунтер: ${trip.name}`,
+          text: `Снимок общака «${trip.name}» — только просмотр`,
+          url,
+        })
+        showToast('Отправили ссылку')
+        return
+      } catch (err) {
+        if (err && err.name === 'AbortError') return
+      }
+    }
+    await copyText(url)
+  } catch {
+    showToast('Не удалось собрать ссылку')
+  }
+}
+
+async function bootFromHash() {
+  const payload = readShareHash()
+  if (!payload) {
+    render()
+    return
+  }
+  try {
+    const trip = await decodeSharePayload(payload)
+    if (!trip) throw new Error('bad')
+    viewTrip = trip
+    screen = 'view'
+    expensesExpanded = false
+    render()
+  } catch {
+    clearShareHash()
+    showToast('Ссылка битая или устарела')
+    render()
+  }
+}
+
+window.addEventListener('hashchange', () => {
+  bootFromHash()
+})
+
+bootFromHash()
 
 if ('serviceWorker' in navigator) {
   // vite-plugin-pwa injects registration via virtual module in build;
