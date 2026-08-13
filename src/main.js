@@ -125,7 +125,7 @@ function renderHome(offline) {
     ${offlineBadge(offline)}
     <header class="topbar">
       <div class="brand">
-        <div class="brand-mark">${logoSvg()}<h1>Алкоунтер</h1></div>
+        <div class="brand-mark">${logoSvg()}<h1>Алкаунтер</h1></div>
         <p>Особенности национального общака</p>
       </div>
       <div class="top-actions">

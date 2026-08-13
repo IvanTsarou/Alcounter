@@ -8,8 +8,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Алкоунтер — общак похода',
-        short_name: 'Алкоунтер',
+        name: 'Алкаунтер — общак похода',
+        short_name: 'Алкаунтер',
         description:
           'Калькулятор взаиморасчётов для похода. Особенности национального общака.',
         theme_color: '#163528',
